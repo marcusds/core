@@ -250,27 +250,24 @@ async def handle_devices_execute(
             entities[entity_id] = GoogleEntity(hass, data.config, state)
             executions[entity_id] = [execution]
 
-    try:
-        execute_results = await asyncio.wait_for(
-            asyncio.shield(
-                asyncio.gather(
-                    *(
-                        _entity_execute(entities[entity_id], data, execution)
-                        for entity_id, execution in executions.items()
-                    )
-                )
-            ),
-            EXECUTE_LIMIT,
+    tasks = {
+        entity_id: hass.async_create_task(
+            _entity_execute(entities[entity_id], data, execution),
+            f"google_assistant execute {entity_id}",
         )
-        results.update(
-            {
-                entity_id: result
-                for entity_id, result in zip(executions, execute_results, strict=False)
-                if result is not None
-            }
-        )
-    except TimeoutError:
-        pass
+        for entity_id, execution in executions.items()
+    }
+    pending: set[asyncio.Task] = set()
+    if tasks:
+        # Commands still running after the limit keep running in the background
+        # and are reported as PENDING.
+        _, pending = await asyncio.wait(tasks.values(), timeout=EXECUTE_LIMIT)
+
+    for entity_id, task in tasks.items():
+        if task in pending:
+            continue
+        if (result := task.result()) is not None:
+            results[entity_id] = result
 
     final_results = list(results.values())
 
@@ -283,7 +280,9 @@ async def handle_devices_execute(
         final_results.append(
             {
                 "ids": [entity.entity_id],
-                "status": "SUCCESS",
+                "status": "PENDING"
+                if tasks[entity.entity_id] in pending
+                else "SUCCESS",
                 "states": entity.query_serialize(),
             }
         )

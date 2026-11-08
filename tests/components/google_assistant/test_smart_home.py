@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import ANY, patch
 
 import pytest
@@ -664,13 +665,11 @@ async def test_execute(
     assert service_events[3].context == events[0].context
 
 
-@pytest.mark.parametrize(
-    ("report_state", "on", "brightness", "value"), [(False, False, ANY, ANY)]
-)
-async def test_execute_times_out(
-    hass: HomeAssistant, light_only, report_state, on, brightness, value
-) -> None:
-    """Test an execute command which times out."""
+async def test_execute_times_out(hass: HomeAssistant, light_only) -> None:
+    """Test an execute command where one entity times out.
+
+    The slow entity is reported as PENDING, the fast one as SUCCESS.
+    """
     orig_execute_limit = sh.EXECUTE_LIMIT
     sh.EXECUTE_LIMIT = 0.02  # Decrease timeout to 20ms
     await async_setup_component(hass, "homeassistant", {})
@@ -691,14 +690,16 @@ async def test_execute_times_out(
 
     turn_on_wait = asyncio.Event()
 
-    async def slow_turn_on(*args, **kwargs):
-        # Make DemoLigt.async_turn_on hang waiting for the turn_on_wait event
+    async def slow_turn_on(**kwargs: Any) -> None:
+        # Make only the ceiling light hang waiting for the turn_on_wait event
         await turn_on_wait.wait()
 
-    with patch.object(DemoLight, "async_turn_on", wraps=slow_turn_on):
+    with patch.object(
+        platforms[0].entities["light.ceiling_lights"], "async_turn_on", slow_turn_on
+    ):
         result = await sh.async_handle_message(
             hass,
-            MockConfig(should_report_state=report_state),
+            MockConfig(should_report_state=False),
             None,
             None,
             {
@@ -749,9 +750,9 @@ async def test_execute_times_out(
                 },
                 {
                     "ids": ["light.ceiling_lights"],
-                    "status": "SUCCESS",
+                    "status": "PENDING",
                     "states": {
-                        "on": on,
+                        "on": False,
                         "online": True,
                     },
                 },
@@ -761,12 +762,12 @@ async def test_execute_times_out(
                     "states": {
                         "on": True,
                         "online": True,
-                        "brightness": brightness,
+                        "brightness": 20,
                         "color": {
                             "spectrumHsv": {
                                 "hue": 345,
                                 "saturation": 0.75,
-                                "value": value,
+                                "value": 0.2,
                             },
                         },
                     },
